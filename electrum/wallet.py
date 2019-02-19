@@ -1385,7 +1385,7 @@ class Imported_Wallet(Simple_Wallet):
             good_addr.append(address)
             self.addresses[address] = {}
             self.add_address(address)
-        self.save_addresses()
+        #self.save_addresses()
         return good_addr, bad_addr
 
     def import_address(self, address: str) -> str:
@@ -1435,7 +1435,7 @@ class Imported_Wallet(Simple_Wallet):
             else:
                 self.keystore.delete_imported_key(pubkey)
                 self.save_keystore()
-        self.save_addresses()
+        #self.save_addresses()
         self.storage.write()
 
     def get_address_index(self, address):
@@ -1462,7 +1462,7 @@ class Imported_Wallet(Simple_Wallet):
             self.addresses[addr] = {'type':txin_type, 'pubkey':pubkey, 'redeem_script':None}
             self.add_address(addr)
         self.save_keystore()
-        self.save_addresses()
+        #self.save_addresses()
         if write_to_disk:
             self.storage.write()
         return good_addr, bad_keys
@@ -1522,10 +1522,10 @@ class Deterministic_Wallet(Abstract_Wallet):
         return out
 
     def get_receiving_addresses(self):
-        return self.receiving_addresses
+        return self.db.get_receiving_addresses()
 
     def get_change_addresses(self):
-        return self.change_addresses
+        return self.db.get_change_addresses()
 
     @profiler
     def try_detecting_internal_addresses_corruption(self):
@@ -1565,7 +1565,7 @@ class Deterministic_Wallet(Abstract_Wallet):
             self.receiving_addresses = self.receiving_addresses[0:n]
             self.gap_limit = value
             self.storage.put('gap_limit', self.gap_limit)
-            self.save_addresses()
+            #self.save_addresses()
             return True
         else:
             return False
@@ -1595,9 +1595,9 @@ class Deterministic_Wallet(Abstract_Wallet):
     def load_addresses(self):
         super().load_addresses()
         self._addr_to_addr_index = {}  # key: address, value: (is_change, index)
-        for i, addr in enumerate(self.receiving_addresses):
+        for i, addr in enumerate(self.db.get_receiving_addresses()):
             self._addr_to_addr_index[addr] = (False, i)
-        for i, addr in enumerate(self.change_addresses):
+        for i, addr in enumerate(self.db.get_change_addresses()):
             self._addr_to_addr_index[addr] = (True, i)
 
     def derive_address(self, for_change, n):
@@ -1607,12 +1607,15 @@ class Deterministic_Wallet(Abstract_Wallet):
     def create_new_address(self, for_change=False):
         assert type(for_change) is bool
         with self.lock:
-            addr_list = self.change_addresses if for_change else self.receiving_addresses
-            n = len(addr_list)
+            #addr_list = self.change_addresses if for_change else self.receiving_addresses
+            #n = len(addr_list)
+            n = self.db.num_change_addresses() if for_change else self.db.num_receiving_addresses()
             address = self.derive_address(for_change, n)
-            addr_list.append(address)
+            self.db.add_change_address(address) if for_change else self.db.add_receiving_address(address)
+            #
+            #addr_list.append(address)
             self._addr_to_addr_index[address] = (for_change, n)
-            self.save_addresses()
+            #self.save_addresses()
             self.add_address(address)
             if for_change:
                 # note: if it's actually used, it will get filtered later
@@ -1622,7 +1625,8 @@ class Deterministic_Wallet(Abstract_Wallet):
     def synchronize_sequence(self, for_change):
         limit = self.gap_limit_for_change if for_change else self.gap_limit
         while True:
-            addresses = self.get_change_addresses() if for_change else self.get_receiving_addresses()
+            addresses = self.db.get_change_addresses() if for_change else self.db.get_receiving_addresses()
+            #n = self.db.num_change_addresses() if for_change else self.db.num_receiving_addresses()
             if len(addresses) < limit:
                 self.create_new_address(for_change)
                 continue

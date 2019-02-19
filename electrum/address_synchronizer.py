@@ -161,7 +161,7 @@ class AddressSynchronizer(PrintError):
 
     def add_address(self, address):
         if address not in self.db.get_history():
-            self.db.history[address] = []
+            #self.db.history[address] = []
             self.set_up_to_date(False)
         if self.synchronizer:
             self.synchronizer.add(address)
