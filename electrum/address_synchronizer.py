@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from .network import Network
 
 
+TX_HEIGHT_FUTURE = -3
 TX_HEIGHT_LOCAL = -2
 TX_HEIGHT_UNCONF_PARENT = -1
 TX_HEIGHT_UNCONFIRMED = 0
@@ -74,6 +75,7 @@ class AddressSynchronizer(PrintError):
         # Verified transactions.  txid -> TxMinedInfo.  Access with self.lock.
         verified_tx = storage.get('verified_tx3', {})
         self.verified_tx = {}  # type: Dict[str, TxMinedInfo]
+        self.future_tx = {} # txid -> blocks remaining
         for txid, (height, timestamp, txpos, header_hash) in verified_tx.items():
             self.verified_tx[txid] = TxMinedInfo(height=height,
                                                  conf=None,
@@ -637,6 +639,11 @@ class AddressSynchronizer(PrintError):
             return cached_local_height
         return self.network.get_local_height() if self.network else self.storage.get('stored_height', 0)
 
+    def add_future_tx(self, tx, num_blocks):
+        with self.lock:
+            self.add_transaction(tx.txid(), tx)
+            self.future_tx[tx.txid()] = num_blocks
+
     def get_tx_height(self, tx_hash: str) -> TxMinedInfo:
         with self.lock:
             if tx_hash in self.verified_tx:
@@ -646,6 +653,9 @@ class AddressSynchronizer(PrintError):
             elif tx_hash in self.unverified_tx:
                 height = self.unverified_tx[tx_hash]
                 return TxMinedInfo(height=height, conf=0)
+            elif tx_hash in self.future_tx:
+                conf = self.future_tx[tx_hash]
+                return TxMinedInfo(height=TX_HEIGHT_FUTURE, conf=conf)
             else:
                 # local transaction
                 return TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
