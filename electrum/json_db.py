@@ -663,6 +663,52 @@ class JsonDB(PrintError):
             self.data[name] = {}
         return self.data[name]
 
+    @locked
+    def num_change_addresses(self):
+        return len(self.change_addresses)
+
+    @locked
+    def num_receiving_addresses(self):
+        return len(self.receiving_addresses)
+
+    @locked
+    def get_change_addresses(self):
+        return list(self.change_addresses)
+
+    @locked
+    def get_receiving_addresses(self):
+        return list(self.receiving_addresses)
+
+    @modifier
+    def add_change_address(self, addr):
+        self._addr_to_addr_index[addr] = (True, len(self.change_addresses))
+        self.change_addresses.append(addr)
+
+    @modifier
+    def add_receiving_address(self, addr):
+        self._addr_to_addr_index[addr] = (False, len(self.receiving_addresses))
+        self.receiving_addresses.append(addr)
+
+    @locked
+    def get_address_index(self, address):
+        return self._addr_to_addr_index[address]
+
+    @modifier
+    def add_imported_address(self, addr, d):
+        self.imported_addresses[addr] = d
+
+    @modifier
+    def remove_imported_address(self, addr):
+        self.imported_addresses.pop(addr)
+
+    @locked
+    def get_imported_addresses(self):
+        return list(sorted(self.imported_addresses.keys()))
+
+    @locked
+    def get_imported_address(self, addr):
+        return self.imported_addresses.get(addr)
+
     @profiler
     def load_transactions(self):
         # references in self.data
@@ -673,6 +719,19 @@ class JsonDB(PrintError):
         self.history = self.get_data_ref('addr_history')  # address -> list of (txid, height)
         self.verified_tx = self.get_data_ref('verified_tx3')  # txid -> (height, timestamp, txpos, header_hash)
         self.tx_fees = self.get_data_ref('tx_fees')
+        # fixme: we should update format to a version where imported and deterministic do not collide..
+        self.imported_addresses = self.get_data_ref('addresses')
+        for name in ['receiving', 'change']:
+            if name not in self.data['addresses']:
+                self.data['addresses'][name] = []
+        self.change_addresses = self.data['addresses']['change']
+        self.receiving_addresses = self.data['addresses']['receiving']
+        self._addr_to_addr_index = {}  # key: address, value: (is_change, index)
+        for i, addr in enumerate(self.receiving_addresses):
+            self._addr_to_addr_index[addr] = (False, i)
+        for i, addr in enumerate(self.change_addresses):
+            self._addr_to_addr_index[addr] = (True, i)
+
         # convert raw hex transactions to Transaction objects
         for tx_hash, raw_tx in self.transactions.items():
             self.transactions[tx_hash] = Transaction(raw_tx)

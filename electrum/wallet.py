@@ -216,7 +216,6 @@ class Abstract_Wallet(AddressSynchronizer):
 
     def load_and_cleanup(self):
         self.load_keystore()
-        self.load_addresses()
         self.test_addresses_sanity()
         super().load_and_cleanup()
 
@@ -231,15 +230,6 @@ class Abstract_Wallet(AddressSynchronizer):
 
     def basename(self):
         return os.path.basename(self.storage.path)
-
-    def save_addresses(self):
-        self.storage.put('addresses', {'receiving':self.receiving_addresses, 'change':self.change_addresses})
-
-    def load_addresses(self):
-        d = self.storage.get('addresses', {})
-        if type(d) != dict: d={}
-        self.receiving_addresses = d.get('receiving', [])
-        self.change_addresses = d.get('change', [])
 
     def test_addresses_sanity(self):
         addrs = self.get_receiving_addresses()
@@ -1324,18 +1314,12 @@ class Imported_Wallet(Simple_Wallet):
 
     def load_keystore(self):
         self.keystore = load_keystore(self.storage, 'keystore') if self.storage.get('keystore') else None
+        # fixme: a reference to addresses is needed
+        if self.keystore:
+            self.keystore.addresses = self.db.imported_addresses
 
     def save_keystore(self):
         self.storage.put('keystore', self.keystore.dump())
-
-    def load_addresses(self):
-        self.addresses = self.storage.get('addresses', {})
-        # fixme: a reference to addresses is needed
-        if self.keystore:
-            self.keystore.addresses = self.addresses
-
-    def save_addresses(self):
-        self.storage.put('addresses', self.addresses)
 
     def can_import_address(self):
         return self.is_watching_only()
@@ -1363,7 +1347,7 @@ class Imported_Wallet(Simple_Wallet):
 
     def get_addresses(self):
         # note: overridden so that the history can be cleared
-        return sorted(self.addresses.keys())
+        return self.db.get_imported_addresses()
 
     def get_receiving_addresses(self):
         return self.get_addresses()
@@ -1379,11 +1363,11 @@ class Imported_Wallet(Simple_Wallet):
             if not bitcoin.is_address(address):
                 bad_addr.append((address, _('invalid address')))
                 continue
-            if address in self.addresses:
+            if self.db.get_imported_address(address):
                 bad_addr.append((address, _('address already in wallet')))
                 continue
             good_addr.append(address)
-            self.addresses[address] = {}
+            self.db.add_imported_address(address, {})
             self.add_address(address)
         self.save_addresses()
         return good_addr, bad_addr
@@ -1396,7 +1380,7 @@ class Imported_Wallet(Simple_Wallet):
             raise BitcoinException(str(bad_addr[0][1]))
 
     def delete_address(self, address):
-        if address not in self.addresses:
+        if not self.db.get_imported_address(address):
             return
         transactions_to_remove = set()  # only referred to by this address
         transactions_new = set()  # txs that are not only referred to by address
@@ -1421,7 +1405,7 @@ class Imported_Wallet(Simple_Wallet):
         self.remove_payment_request(address, {})
         self.set_frozen_state([address], False)
         pubkey = self.get_public_key(address)
-        self.addresses.pop(address)
+        self.db.remove_imported_address(address)
         if pubkey:
             # delete key iff no other address uses it (e.g. p2pkh and p2wpkh for same key)
             for txin_type in bitcoin.WIF_SCRIPT_TYPES.keys():
@@ -1430,19 +1414,18 @@ class Imported_Wallet(Simple_Wallet):
                 except NotImplementedError:
                     pass
                 else:
-                    if addr2 in self.addresses:
+                    if self.db.get_imported_address(addr2):
                         break
             else:
                 self.keystore.delete_imported_key(pubkey)
                 self.save_keystore()
-        self.save_addresses()
         self.storage.write()
 
     def get_address_index(self, address):
         return self.get_public_key(address)
 
     def get_public_key(self, address):
-        return self.addresses[address].get('pubkey')
+        return self.db.get_imported_address(address).get('pubkey')
 
     def import_private_keys(self, keys: List[str], password: Optional[str], *,
                             write_to_disk=True) -> Tuple[List[str], List[Tuple[str, str]]]:
@@ -1459,7 +1442,7 @@ class Imported_Wallet(Simple_Wallet):
                 continue
             addr = bitcoin.pubkey_to_address(txin_type, pubkey)
             good_addr.append(addr)
-            self.addresses[addr] = {'type':txin_type, 'pubkey':pubkey, 'redeem_script':None}
+            self.db.add_imported_address(addr, {'type':txin_type, 'pubkey':pubkey, 'redeem_script':None})
             self.add_address(addr)
         self.save_keystore()
         self.save_addresses()
@@ -1475,12 +1458,12 @@ class Imported_Wallet(Simple_Wallet):
             raise BitcoinException(str(bad_keys[0][1]))
 
     def get_redeem_script(self, address):
-        d = self.addresses[address]
+        d = self.db.get_imported_address(address)
         redeem_script = d['redeem_script']
         return redeem_script
 
     def get_txin_type(self, address):
-        return self.addresses[address].get('type', 'address')
+        return self.db.get_imported_address(address).get('type', 'address')
 
     def add_input_sig_info(self, txin, address):
         if self.is_watching_only():
@@ -1489,7 +1472,7 @@ class Imported_Wallet(Simple_Wallet):
             txin['signatures'] = [None]
             return
         if txin['type'] in ['p2pkh', 'p2wpkh', 'p2wpkh-p2sh']:
-            pubkey = self.addresses[address]['pubkey']
+            pubkey = self.db.get_imported_address(address)['pubkey']
             txin['num_sig'] = 1
             txin['x_pubkeys'] = [pubkey]
             txin['signatures'] = [None]
@@ -1522,10 +1505,10 @@ class Deterministic_Wallet(Abstract_Wallet):
         return out
 
     def get_receiving_addresses(self):
-        return self.receiving_addresses
+        return self.db.get_receiving_addresses()
 
     def get_change_addresses(self):
-        return self.change_addresses
+        return self.db.get_change_addresses()
 
     @profiler
     def try_detecting_internal_addresses_corruption(self):
@@ -1592,14 +1575,6 @@ class Deterministic_Wallet(Abstract_Wallet):
                 if n > nmax: nmax = n
         return nmax + 1
 
-    def load_addresses(self):
-        super().load_addresses()
-        self._addr_to_addr_index = {}  # key: address, value: (is_change, index)
-        for i, addr in enumerate(self.receiving_addresses):
-            self._addr_to_addr_index[addr] = (False, i)
-        for i, addr in enumerate(self.change_addresses):
-            self._addr_to_addr_index[addr] = (True, i)
-
     def derive_address(self, for_change, n):
         x = self.derive_pubkeys(for_change, n)
         return self.pubkeys_to_address(x)
@@ -1607,12 +1582,9 @@ class Deterministic_Wallet(Abstract_Wallet):
     def create_new_address(self, for_change=False):
         assert type(for_change) is bool
         with self.lock:
-            addr_list = self.change_addresses if for_change else self.receiving_addresses
-            n = len(addr_list)
+            n = self.db.num_change_addresses() if for_change else self.db.num_receiving_addresses()
             address = self.derive_address(for_change, n)
-            addr_list.append(address)
-            self._addr_to_addr_index[address] = (for_change, n)
-            self.save_addresses()
+            self.db.add_change_address(address) if for_change else self.db.add_receiving_address(address)
             self.add_address(address)
             if for_change:
                 # note: if it's actually used, it will get filtered later
@@ -1649,7 +1621,7 @@ class Deterministic_Wallet(Abstract_Wallet):
         return True
 
     def get_address_index(self, address):
-        return self._addr_to_addr_index[address]
+        return self.db.get_address_index(address)
 
     def get_master_public_keys(self):
         return [self.get_master_public_key()]
